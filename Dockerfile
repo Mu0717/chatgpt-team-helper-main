@@ -70,8 +70,13 @@ COPY supervisord.conf /etc/supervisord.conf
 # 创建数据库目录
 RUN mkdir -p /app/backend/db
 
-# 暴露端口（只需要暴露前端端口，API 通过 nginx 内部代理）
-EXPOSE 5173
+# 暴露端口（Cloud Run 默认使用 8080）
+EXPOSE 8080
 
-# 使用 supervisor 启动所有服务
-CMD ["/usr/bin/supervisord", "-c", "/etc/supervisord.conf"]
+# 创建启动脚本：用 envsubst 将 PORT 注入 nginx 配置，然后启动 supervisord
+RUN printf '#!/bin/sh\nexport NGINX_PORT=${PORT:-8080}\nenvsubst "\$NGINX_PORT" < /etc/nginx/conf.d/default.conf.template > /etc/nginx/conf.d/default.conf\nexec /usr/bin/supervisord -c /etc/supervisord.conf\n' > /app/start.sh && chmod +x /app/start.sh
+
+# 将 default.conf 作为模板保存
+RUN mv /etc/nginx/conf.d/default.conf /etc/nginx/conf.d/default.conf.template
+
+CMD ["/app/start.sh"]
