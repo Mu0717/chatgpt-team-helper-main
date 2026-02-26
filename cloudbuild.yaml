@@ -1,0 +1,59 @@
+# Cloud Build 配置文件
+# 使用方法：
+#   1. 在 Google Cloud Console 的 Secret Manager 中创建 secret：JWT_SECRET
+#   2. 授予 Cloud Build 服务账号访问 secret 的权限
+#   3. 设置 Cloud Build 触发器，指定此文件为构建配置
+#
+# 需要设置的替换变量（在触发器中配置）：
+#   _REGION: Cloud Run 部署区域，例如 asia-east1
+#   _SERVICE_NAME: Cloud Run 服务名称，默认 chatgpt-team-helper-main
+
+substitutions:
+  _SERVICE_NAME: chatgpt-team-helper-main
+  _REGION: asia-east1
+
+steps:
+  # 步骤 1：构建 Docker 镜像
+  - name: "gcr.io/cloud-builders/docker"
+    id: "Build"
+    args:
+      - "build"
+      - "-t"
+      - "gcr.io/$PROJECT_ID/${_SERVICE_NAME}:$COMMIT_SHA"
+      - "-t"
+      - "gcr.io/$PROJECT_ID/${_SERVICE_NAME}:latest"
+      - "."
+
+  # 步骤 2：推送镜像到 Container Registry
+  - name: "gcr.io/cloud-builders/docker"
+    id: "Push"
+    args:
+      - "push"
+      - "--all-tags"
+      - "gcr.io/$PROJECT_ID/${_SERVICE_NAME}"
+
+  # 步骤 3：部署到 Cloud Run
+  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk:slim"
+    id: "Deploy"
+    entrypoint: "gcloud"
+    args:
+      - "run"
+      - "services"
+      - "update"
+      - "${_SERVICE_NAME}"
+      - "--image=gcr.io/$PROJECT_ID/${_SERVICE_NAME}:$COMMIT_SHA"
+      - "--region=${_REGION}"
+      - "--platform=managed"
+      - "--port=8080"
+      - "--update-secrets=JWT_SECRET=JWT_SECRET:latest"
+      - "--set-env-vars"
+      - "NODE_ENV=production,DATABASE_PATH=/app/backend/db/database.sqlite,TZ=Asia/Shanghai"
+      - "--timeout=600"
+      - "--startup-cpu-boost"
+
+images:
+  - "gcr.io/$PROJECT_ID/${_SERVICE_NAME}:$COMMIT_SHA"
+  - "gcr.io/$PROJECT_ID/${_SERVICE_NAME}:latest"
+
+options:
+  logging: CLOUD_LOGGING_ONLY
