@@ -34,10 +34,11 @@ COPY backend/ ./backend/
 # 多阶段构建 - 阶段3：最终运行镜像
 FROM node:20-alpine
 
-# 安装 nginx、supervisor 以及小红书订单同步所需的运行依赖（Chromium、Chromedriver、Python等）
+# 安装 nginx、supervisor、gettext（提供 envsubst）及其他运行依赖
 RUN apk add --no-cache \
     nginx \
     supervisor \
+    gettext \
     nss \
     harfbuzz \
     freetype \
@@ -67,16 +68,17 @@ COPY default.conf /etc/nginx/conf.d/default.conf
 # 创建 supervisor 配置
 COPY supervisord.conf /etc/supervisord.conf
 
+# 复制启动脚本
+COPY start.sh /app/start.sh
+RUN chmod +x /app/start.sh
+
 # 创建数据库目录
 RUN mkdir -p /app/backend/db
 
 # 暴露端口（Cloud Run 默认使用 8080）
 EXPOSE 8080
 
-# 创建启动脚本：用 envsubst 将 PORT 注入 nginx 配置，然后启动 supervisord
-RUN printf '#!/bin/sh\nexport NGINX_PORT=${PORT:-8080}\nenvsubst "\$NGINX_PORT" < /etc/nginx/conf.d/default.conf.template > /etc/nginx/conf.d/default.conf\nexec /usr/bin/supervisord -c /etc/supervisord.conf\n' > /app/start.sh && chmod +x /app/start.sh
-
-# 将 default.conf 作为模板保存
+# 将 default.conf 作为模板保存（start.sh 会用 envsubst 替换端口变量）
 RUN mv /etc/nginx/conf.d/default.conf /etc/nginx/conf.d/default.conf.template
 
 CMD ["/app/start.sh"]
