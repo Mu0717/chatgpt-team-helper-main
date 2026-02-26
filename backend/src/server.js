@@ -44,10 +44,9 @@ if (isProduction) {
   const jwtSecret = String(process.env.JWT_SECRET || "").trim();
   if (!jwtSecret || jwtSecret === INSECURE_DEFAULT_JWT_SECRET) {
     console.error(
-      "[SECURITY] WARNING: JWT_SECRET is not set or is using the insecure default. Please set a strong JWT_SECRET in production!",
+      "[SECURITY] JWT_SECRET must be set to a strong random value in production",
     );
-    // 注意：不再直接退出，改为警告，以避免容器无法启动
-    // 部署成功后应尽快配置正确的 JWT_SECRET
+    process.exit(1);
   }
 }
 
