@@ -70,7 +70,8 @@ COPY supervisord.conf /etc/supervisord.conf
 
 # 复制启动脚本
 COPY start.sh /app/start.sh
-RUN chmod +x /app/start.sh
+COPY run-backend.sh /app/run-backend.sh
+RUN chmod +x /app/start.sh /app/run-backend.sh
 
 # 创建数据库目录
 RUN mkdir -p /app/backend/db
