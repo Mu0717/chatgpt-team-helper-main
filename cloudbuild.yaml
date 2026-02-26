@@ -50,6 +50,8 @@ steps:
       - "NODE_ENV=production,DATABASE_PATH=/app/backend/db/database.sqlite,TZ=Asia/Shanghai"
       - "--timeout=600"
       - "--startup-cpu-boost"
+      - "--no-cpu-throttling"
+      - "--min-instances=1"
 
 images:
   - "gcr.io/$PROJECT_ID/${_SERVICE_NAME}:$COMMIT_SHA"
