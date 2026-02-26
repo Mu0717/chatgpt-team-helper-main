@@ -1,0 +1,35 @@
+version: '3.8'
+
+services:
+  app:
+    image: ghcr.io/kylsky/chatgpt-team-helper:latest
+    # 或使用本地构建: image: auto-gpt-team:latest
+    container_name: auto-gpt-team
+    ports:
+      - "5173:5173" # 前端 Web 端口（API 通过 nginx 代理，无需暴露 3000）
+    volumes:
+      # 持久化数据库文件
+      - ./data:/app/backend/db
+    env_file:
+      - ./backend/.env
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      NODE_ENV: ${NODE_ENV:-production}
+      DATABASE_PATH: ${DATABASE_PATH:-/app/backend/db/database.sqlite}
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:5173/" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+# 可选：定义网络
+networks:
+  default:
+    driver: bridge
+
+# 可选：定义卷
+volumes:
+  data:
+    driver: local

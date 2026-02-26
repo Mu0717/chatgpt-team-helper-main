@@ -1,0 +1,42 @@
+.git
+.gitignore
+.claude
+.cursor
+.vscode
+.idea
+
+# Dependencies
+node_modules
+frontend/node_modules
+backend/node_modules
+
+# Build outputs
+dist
+frontend/dist
+frontend/.vite
+backend/dist
+coverage
+
+# Logs
+logs
+*.log
+
+# Runtime data
+data
+backend/db
+backend/*.sqlite
+*.sqlite3
+
+# Environment files
+.env
+.env.*
+frontend/.env
+frontend/.env.*
+backend/.env
+backend/.env.*
+
+# OS / editor junk
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
