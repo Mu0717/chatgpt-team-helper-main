@@ -1,40 +1,35 @@
-# 多阶段构建 - 阶段1：构建前端（使用 lockfile 确保可复现）
+# 多阶段构建 - 阶段1：构建前端
 FROM node:20-alpine AS frontend-builder
 
 WORKDIR /app
 
-# 复制依赖清单（包含 workspaces），用于可复现安装
 COPY package.json package-lock.json ./
 COPY frontend/package.json ./frontend/package.json
 COPY backend/package.json ./backend/package.json
 
-# 安装所有依赖（包含前端构建所需的 devDependencies）
 RUN npm ci
 
-# 复制前端代码并构建
 COPY frontend/ ./frontend/
 RUN npm run build-only --workspace=frontend
 
-# 多阶段构建 - 阶段2：准备后端（仅安装生产依赖，使用 lockfile）
+
+# 多阶段构建 - 阶段2：准备后端
 FROM node:20-alpine AS backend-builder
 
 WORKDIR /app
 
-# 复制依赖清单（包含 workspaces）
 COPY package.json package-lock.json ./
 COPY backend/package.json ./backend/package.json
 COPY frontend/package.json ./frontend/package.json
 
-# 仅安装后端生产依赖
 RUN npm ci --omit=dev --workspace=backend
 
-# 复制后端源代码
 COPY backend/ ./backend/
+
 
 # 多阶段构建 - 阶段3：最终运行镜像
 FROM node:20-alpine
 
-# 安装 nginx、supervisor 以及小红书订单同步所需的运行依赖（Chromium、Chromedriver、Python等）
 RUN apk add --no-cache \
     nginx \
     supervisor \
@@ -45,39 +40,32 @@ RUN apk add --no-cache \
     bash \
     udev \
     curl \
+    wget \
     gettext \
     tzdata
 
-# 创建工作目录
 WORKDIR /app
 
-# 从构建阶段复制前端构建文件
 COPY --from=frontend-builder /app/frontend/dist /usr/share/nginx/html
 
-# 从构建阶段复制后端文件
 COPY --from=backend-builder /app/node_modules ./node_modules
 COPY --from=backend-builder /app/backend/src ./backend/src
 COPY --from=backend-builder /app/backend/package.json ./backend/
 COPY --from=backend-builder /app/backend/version.json ./backend/
 
-# 创建 nginx 配置
 RUN mkdir -p /etc/nginx/conf.d
 COPY nginx.conf /etc/nginx/nginx.conf
 COPY default.conf /etc/nginx/conf.d/default.conf
 
-# 创建 supervisor 配置
 COPY supervisord.conf /etc/supervisord.conf
 
-# 创建数据库目录
 RUN mkdir -p /app/backend/db
 
-# 暴露端口（Cloud Run 默认使用 8080）
 EXPOSE 8080
 
-# 创建启动脚本：用 envsubst 将 PORT 注入 nginx 配置，然后启动 supervisord
-RUN printf '#!/bin/sh\nexport NGINX_PORT=${PORT:-8080}\nenvsubst "\$NGINX_PORT" < /etc/nginx/conf.d/default.conf.template > /etc/nginx/conf.d/default.conf\nexec /usr/bin/supervisord -c /etc/supervisord.conf\n' > /app/start.sh && chmod +x /app/start.sh
-
-# 将 default.conf 作为模板保存
 RUN mv /etc/nginx/conf.d/default.conf /etc/nginx/conf.d/default.conf.template
+
+RUN printf '#!/bin/sh\nset -e\nexport NGINX_PORT=${NGINX_PORT:-8080}\nenvsubst "\\$NGINX_PORT" < /etc/nginx/conf.d/default.conf.template > /etc/nginx/conf.d/default.conf\nexec /usr/bin/supervisord -c /etc/supervisord.conf\n' > /app/start.sh \
+    && chmod +x /app/start.sh
 
 CMD ["/app/start.sh"]
