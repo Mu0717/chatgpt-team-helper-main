@@ -45,6 +45,7 @@ RUN apk add --no-cache \
     bash \
     udev \
     curl \
+    gettext \
     tzdata
 
 # 创建工作目录
