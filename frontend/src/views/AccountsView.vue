@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, onUnmounted, nextTick, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { API_URL, authService, gptAccountService, openaiOAuthService, userService, type AccountStatus, type CheckAccountStatusItem, type CheckAccountStatusResponse, type GptAccount, type CreateGptAccountDto, type SyncUserCountResponse, type GptAccountsListParams, type ChatgptAccountInviteItem, type ChatgptAccountCheckInfo, type OpenAIOAuthSession, type OpenAIOAuthExchangeResult } from '@/services/api'
+import { API_URL, authService, gptAccountService, openaiOAuthService, userService, redemptionCodeService, configService, type AccountStatus, type CheckAccountStatusItem, type CheckAccountStatusResponse, type GptAccount, type CreateGptAccountDto, type SyncUserCountResponse, type GptAccountsListParams, type ChatgptAccountInviteItem, type ChatgptAccountCheckInfo, type OpenAIOAuthSession, type OpenAIOAuthExchangeResult, type RedemptionCode } from '@/services/api'
 import { formatShanghaiDate } from '@/lib/datetime'
 import { useAppConfigStore } from '@/stores/appConfig'
 import {
@@ -28,7 +28,7 @@ import {
 } from '@/components/ui/dialog'
 import { useToast } from '@/components/ui/toast'
 import AppleNativeDateTimeInput from '@/components/ui/apple/NativeDateTimeInput.vue'
-import { Plus, Eye, EyeOff, RefreshCw, Ban, FilePenLine, Trash2, AlertTriangle, X, FolderOpen, Search } from 'lucide-vue-next'
+import { Plus, Eye, EyeOff, RefreshCw, Ban, FilePenLine, Trash2, AlertTriangle, X, FolderOpen, Search, Ticket, UserPlus } from 'lucide-vue-next'
 
 const router = useRouter()
 const accounts = ref<GptAccount[]>([])
@@ -52,6 +52,148 @@ const dateFormatOptions = computed(() => ({
 // Teleport 目标是否存在
 const teleportReady = ref(false)
 
+// 账号兑换码管理/批量邀请
+const showAccountCodesDialog = ref(false)
+const codesDialogTab = ref<'list' | 'invite'>('invite')
+const selectedAccountForCodes = ref<GptAccount | null>(null)
+const loadingAccountCodes = ref(false)
+const accountCodes = ref<RedemptionCode[]>([])
+
+const batchInviteEmailsInput = ref('')
+const batchInviteProcessing = ref(false)
+const batchInviteProgress = ref({ total: 0, success: 0, failed: 0 })
+const batchInviteLogs = ref<{email: string, status: string, message: string}[]>([])
+
+const selectedBatchChannel = ref('common')
+const channelOptions = ref<Array<{ value: string; label: string }>>([
+  { value: 'common', label: '通用渠道' },
+  { value: 'paypal', label: 'PayPal' },
+  { value: 'linux-do', label: 'Linux DO' },
+  { value: 'xhs', label: '小红书' },
+  { value: 'xianyu', label: '闲鱼' },
+  { value: 'artisan-flow', label: 'ArtisanFlow' }
+])
+
+const loadChannels = async () => {
+  try {
+    const runtime = await configService.getRuntimeConfig()
+    const channels = Array.isArray(runtime.channels) ? runtime.channels : []
+    if (!channels.length) return
+
+    channelOptions.value = channels.map(channel => ({
+      value: channel.key,
+      label: channel.isActive ? channel.name : `${channel.name}（停用）`
+    }))
+
+    if (!channelOptions.value.some(option => option.value === selectedBatchChannel.value)) {
+      selectedBatchChannel.value = channelOptions.value[0]?.value || 'common'
+    }
+  } catch (err) {
+    console.warn('load channels failed', err)
+  }
+}
+
+const loadAccountCodes = async (accountEmail: string) => {
+  loadingAccountCodes.value = true
+  try {
+    const res = await redemptionCodeService.list({ search: accountEmail, pageSize: 1000 })
+    accountCodes.value = res.codes || []
+  } catch (err: any) {
+    showErrorToast(err.response?.data?.error || '获取兑换码失败')
+  } finally {
+    loadingAccountCodes.value = false
+  }
+}
+
+const openAccountCodesDialog = (account: GptAccount) => {
+  selectedAccountForCodes.value = account
+  codesDialogTab.value = 'invite'
+  batchInviteEmailsInput.value = ''
+  batchInviteLogs.value = []
+  batchInviteProgress.value = { total: 0, success: 0, failed: 0 }
+  showAccountCodesDialog.value = true
+  loadAccountCodes(account.email)
+}
+
+const closeAccountCodesDialog = () => {
+  showAccountCodesDialog.value = false
+  selectedAccountForCodes.value = null
+  accountCodes.value = []
+}
+
+const handleBatchInviteProcess = async () => {
+  if (!selectedAccountForCodes.value) return
+  const rawEmails = batchInviteEmailsInput.value.split('\n').map(e => e.trim()).filter(Boolean)
+  const validEmails = rawEmails.filter(e => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e))
+  
+  if (validEmails.length === 0) {
+    showErrorToast('没有输入有效的邮箱地址')
+    return
+  }
+  if (!confirm(`将使用兑换码自动核销邀请 ${validEmails.length} 个邮箱到账号 ${selectedAccountForCodes.value.email}，确认继续？`)) {
+    return
+  }
+
+  batchInviteProcessing.value = true
+  batchInviteProgress.value = { total: validEmails.length, success: 0, failed: 0 }
+  batchInviteLogs.value = []
+
+  const accountEmail = selectedAccountForCodes.value.email
+
+  try {
+    let unusedCodes = accountCodes.value.filter(c => !c.isRedeemed)
+    if (unusedCodes.length < validEmails.length) {
+       const deficit = validEmails.length - unusedCodes.length
+       batchInviteLogs.value.push({ email: '系统', status: 'info', message: `可用兑换码不足，自动补充生成 ${deficit} 个...` })
+       const batchRes = await redemptionCodeService.batchCreate(deficit, accountEmail, selectedBatchChannel.value)
+       unusedCodes = [...unusedCodes, ...batchRes.codes]
+    }
+
+    let codeIndex = 0
+    for (const email of validEmails) {
+      if (codeIndex >= unusedCodes.length) {
+         batchInviteLogs.value.push({ email, status: 'error', message: '可用兑换码不足，核销可能失败' })
+         batchInviteProgress.value.failed++
+         continue
+      }
+      const codeToUse = unusedCodes[codeIndex]
+      codeIndex++
+
+      if (!codeToUse) {
+         batchInviteLogs.value.push({ email, status: 'error', message: '获取兑换码异常' })
+         batchInviteProgress.value.failed++
+         continue
+      }
+
+      try {
+         await redemptionCodeService.redeemAdmin({
+            email,
+            code: codeToUse.code,
+            channel: codeToUse.channel || 'common',
+            orderType: 'warranty'
+         })
+         batchInviteLogs.value.push({ email, status: 'success', message: `自动核销码 ${codeToUse.code} 成功` })
+         batchInviteProgress.value.success++
+      } catch (err: any) {
+         const errorMsg = err.response?.data?.message || err.response?.data?.error || '核销失败'
+         batchInviteLogs.value.push({ email, status: 'error', message: errorMsg })
+         batchInviteProgress.value.failed++
+      }
+    }
+
+    showSuccessToast('批量自动核销邀请执行完毕')
+  } catch (err: any) {
+    showErrorToast(err.response?.data?.error || '执行过程中出现错误')
+  } finally {
+    batchInviteProcessing.value = false
+    await loadAccountCodes(accountEmail)
+  }
+}
+
+const handleViewRedemptions = (account: GptAccount) => {
+  router.push({ path: '/admin/redemption-codes', query: { search: account.email } })
+}
+
 onMounted(async () => {
   // 等待 DOM 更新后检查 teleport 目标
   await nextTick()
@@ -62,7 +204,10 @@ onMounted(async () => {
     return
   }
 
-  await loadAccounts()
+  await Promise.all([
+    loadAccounts(),
+    loadChannels()
+  ])
 })
 
 onUnmounted(() => {
@@ -1450,6 +1595,28 @@ const handleInviteSubmit = async () => {
 	                <td class="px-6 py-5 text-sm text-gray-500">{{ formatShanghaiDate(account.createdAt, dateFormatOptions) }}</td>
 	                <td class="px-6 py-5 text-right">
                   <div class="flex items-center justify-end gap-1">
+                    <!-- View Redemptions -->
+                    <Button 
+                      size="icon" 
+                      variant="ghost" 
+                      class="h-8 w-8 text-indigo-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg"
+                      @click="handleViewRedemptions(account)"
+                      title="查看兑换记录"
+                    >
+                      <Ticket class="w-4 h-4" />
+                    </Button>
+
+                    <!-- Batch Invite -->
+                    <Button 
+                      size="icon" 
+                      variant="ghost" 
+                      class="h-8 w-8 text-purple-400 hover:text-purple-600 hover:bg-purple-50 rounded-lg"
+                      @click="openAccountCodesDialog(account)"
+                      title="当前页面管理及批量邀请"
+                    >
+                      <UserPlus class="w-4 h-4" />
+                    </Button>
+
                     <!-- Toggle Open -->
                     <Button 
                       size="icon" 
@@ -1588,6 +1755,12 @@ const handleInviteSubmit = async () => {
 
                <!-- More Actions -->
                <div class="flex gap-1">
+                  <Button size="icon" variant="ghost" class="h-9 w-9 text-indigo-400 hover:text-indigo-600 hover:bg-indigo-50" @click="handleViewRedemptions(account)" title="查看兑换记录">
+                     <Ticket class="w-4 h-4" />
+                  </Button>
+                  <Button size="icon" variant="ghost" class="h-9 w-9 text-purple-400 hover:text-purple-600 hover:bg-purple-50" @click="openAccountCodesDialog(account)" title="当前页面管理及批量邀请">
+                     <UserPlus class="w-4 h-4" />
+                  </Button>
                   <Button size="icon" variant="ghost" class="h-9 w-9 text-gray-400" @click="handleSyncUserCount(account)">
                      <RefreshCw class="w-4 h-4" :class="{ 'animate-spin': syncingAccountId === account.id }" />
                   </Button>
@@ -2306,6 +2479,125 @@ const handleInviteSubmit = async () => {
           <p class="text-sm text-gray-600 font-medium">正在同步成员信息...</p>
         </div>
       </div>
+      </DialogContent>
+    </Dialog>
+
+    <!-- Account Codes & Batch Invite Dialog -->
+    <Dialog v-model:open="showAccountCodesDialog">
+      <DialogContent class="sm:max-w-[700px] p-0 overflow-hidden bg-white border-none shadow-2xl rounded-3xl max-h-[85vh] flex flex-col">
+        <DialogHeader class="px-8 pt-8 pb-4 shrink-0">
+          <DialogTitle class="text-2xl font-bold text-gray-900">账号当前兑换码及批量邀请</DialogTitle>
+          <p class="text-sm text-gray-500 mt-2">
+            正在操作账号: <span class="font-bold text-gray-800">{{ selectedAccountForCodes?.email }}</span>
+          </p>
+        </DialogHeader>
+
+        <div class="px-8 pb-4 shrink-0 flex items-center gap-2">
+           <button
+             @click="codesDialogTab = 'invite'"
+             class="px-4 py-1.5 rounded-lg text-sm font-medium transition-all"
+             :class="codesDialogTab === 'invite' ? 'bg-black text-white shadow-sm' : 'bg-gray-100 text-gray-500 hover:text-gray-700'"
+           >
+             批量自动核销 (邀请)
+           </button>
+           <button
+             @click="codesDialogTab = 'list'"
+             class="px-4 py-1.5 rounded-lg text-sm font-medium transition-all"
+             :class="codesDialogTab === 'list' ? 'bg-black text-white shadow-sm' : 'bg-gray-100 text-gray-500 hover:text-gray-700'"
+           >
+             本页兑换码列表
+           </button>
+        </div>
+
+        <div class="flex-1 min-h-0 px-8 pb-6 overflow-y-auto">
+          <!-- Invite Tab -->
+          <div v-if="codesDialogTab === 'invite'" class="space-y-4">
+            <div class="space-y-2">
+              <Label class="text-xs font-semibold text-gray-500 uppercase tracking-wider">批量邀请邮箱列表</Label>
+              <textarea
+                v-model="batchInviteEmailsInput"
+                class="w-full h-32 p-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-100 focus:border-blue-500 transition-all text-sm resize-none"
+                placeholder="一行一个邮箱地址，例如：&#10;yangzenghaohtu@gmail.com&#10;nobodyorsomebody@proton.me"
+              ></textarea>
+            </div>
+            <div class="space-y-2">
+              <Label class="text-xs font-semibold text-gray-500 uppercase tracking-wider">补充渠道 (如可用码不足则自动根据此渠道生成)</Label>
+              <Select v-model="selectedBatchChannel">
+                <SelectTrigger class="h-11 bg-gray-50 border-gray-200 rounded-xl">
+                  <SelectValue placeholder="选择渠道" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem v-for="option in channelOptions" :key="option.value" :value="option.value">
+                    {{ option.label }}
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div v-if="batchInviteLogs.length > 0" class="mt-6">
+              <div class="flex items-center justify-between mb-2">
+                <p class="text-xs font-semibold text-gray-500 uppercase">执行日志 / 进度</p>
+                <p class="text-[12px] font-mono bg-gray-100 px-2 py-1 rounded text-gray-700">
+                   成功 <span class="text-green-600 font-bold">{{ batchInviteProgress.success }}</span> / 失败 <span class="text-red-500 font-bold">{{ batchInviteProgress.failed }}</span> / 总共 {{ batchInviteProgress.total }}
+                </p>
+              </div>
+              <div class="h-40 overflow-y-auto bg-gray-900 border border-gray-800 rounded-xl p-3 space-y-1 font-mono text-[12px]">
+                 <div v-for="(log, idx) in batchInviteLogs" :key="idx" class="flex items-start gap-2 text-gray-300 break-all">
+                    <span class="text-gray-500 shrink-0">[{{ idx + 1 }}]</span>
+                    <span :class="{'text-green-400': log.status === 'success', 'text-red-400': log.status === 'error', 'text-blue-400': log.status === 'info' }">
+                      {{ log.email }} - {{ log.message }}
+                    </span>
+                 </div>
+                 <div v-if="batchInviteProcessing" class="text-gray-500 animate-pulse mt-2">正在执行...</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- List Tab -->
+          <div v-if="codesDialogTab === 'list'" class="space-y-4">
+             <div v-if="loadingAccountCodes" class="flex justify-center py-10">
+                <div class="w-6 h-6 border-2 border-blue-500/20 border-t-blue-500 rounded-full animate-spin"></div>
+             </div>
+             <table v-else class="w-full text-sm table-fixed">
+                <thead class="bg-gray-50 text-gray-500 text-xs uppercase">
+                   <tr>
+                      <th class="px-3 py-2 text-left font-medium w-1/3">兑换码</th>
+                      <th class="px-3 py-2 text-center font-medium w-1/4">状态</th>
+                      <th class="px-3 py-2 text-left font-medium">绑定邮箱</th>
+                   </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-50">
+                   <tr v-for="c in accountCodes" :key="c.id" class="hover:bg-gray-50/50">
+                      <td class="px-3 py-2 font-mono text-gray-900">{{ c.code.substring(0, 8) }}...</td>
+                      <td class="px-3 py-2 text-center">
+                         <span v-if="c.isRedeemed" class="text-gray-500 text-xs bg-gray-100 px-1.5 py-0.5 rounded">已使用</span>
+                         <span v-else class="text-green-600 text-xs bg-green-50 px-1.5 py-0.5 rounded">未使用</span>
+                      </td>
+                      <td class="px-3 py-2 text-gray-500 truncate" :title="c.redeemedBy || ''">{{ c.redeemedBy || '-' }}</td>
+                   </tr>
+                   <tr v-if="!accountCodes.length">
+                      <td colspan="3" class="px-3 py-6 text-center text-gray-400">尚未生成兑换码</td>
+                   </tr>
+                </tbody>
+             </table>
+          </div>
+        </div>
+
+        <DialogFooter class="px-8 pb-8 pt-4 shrink-0 border-t border-gray-100 bg-white/80 backdrop-blur justify-between flex-row items-center">
+          <div class="flex-1"></div>
+          <Button type="button" variant="ghost" @click="closeAccountCodesDialog" class="rounded-xl h-11 px-6 mr-2 text-gray-500 hover:bg-gray-100" :disabled="batchInviteProcessing">
+            关闭
+          </Button>
+          <Button v-if="codesDialogTab === 'invite'" type="button" class="rounded-xl h-11 px-6 bg-black hover:bg-gray-800 text-white shadow-lg" :disabled="batchInviteProcessing" @click="handleBatchInviteProcess">
+            <template v-if="batchInviteProcessing">
+              <span class="animate-spin w-4 h-4 border-2 border-current border-t-transparent rounded-full mr-2"></span>
+              执行中...
+            </template>
+            <template v-else>
+              开始自动核销
+            </template>
+          </Button>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   </div>

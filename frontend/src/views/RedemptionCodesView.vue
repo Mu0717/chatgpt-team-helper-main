@@ -27,7 +27,7 @@ import {
   DialogFooter,
 } from '@/components/ui/dialog'
 import { useToast } from '@/components/ui/toast'
-import { Search, Plus, Download, Trash2, ChevronLeft, ChevronRight, RefreshCcw, RefreshCw, Ticket, X } from 'lucide-vue-next'
+import { Search, Plus, Download, Trash2, ChevronLeft, ChevronRight, RefreshCcw, RefreshCw, Ticket, X, Copy, AlertTriangle } from 'lucide-vue-next'
 
 const router = useRouter()
 const route = useRoute()
@@ -49,6 +49,12 @@ const redeemEmail = ref('')
 const redeemOrderType = ref<PurchaseOrderType>('warranty')
 const redeeming = ref(false)
 const reinvitingCodeIds = ref<number[]>([])
+const showBatchRedeemDialog = ref(false)
+const batchRedeemEmailsInput = ref('')
+const batchRedeemProcessing = ref(false)
+const batchRedeemProgress = ref({ total: 0, success: 0, failed: 0 })
+const batchRedeemLogs = ref<{email: string, status: string, message: string}[]>([])
+
 const appConfigStore = useAppConfigStore()
 const dateFormatOptions = computed(() => ({
   timeZone: appConfigStore.timezone,
@@ -520,6 +526,113 @@ const copyToClipboard = async (text: string, options: { silent?: boolean } = {})
   }
 }
 
+const handleBatchCopy = async () => {
+  if (selectedCodes.value.length === 0) {
+    showWarningToast('请选择要复制的兑换码')
+    return
+  }
+
+  const copiedCodes = codes.value
+    .filter(c => selectedCodes.value.includes(c.id))
+    .map(c => c.code)
+
+  if (copiedCodes.length === 0) {
+    showWarningToast('未在当前页找到选中的兑换码')
+    return
+  }
+
+  await copyToClipboard(copiedCodes.join('\n'), { silent: true })
+  showSuccessToast(`已批量复制 ${copiedCodes.length} 个兑换码`)
+
+  if (copiedCodes.length < selectedCodes.value.length) {
+    showInfoToast('部分选中的兑换码不在当前页，仅复制了当前页的内容')
+  }
+}
+
+const openBatchRedeemDialog = () => {
+  const unusedSelectedCount = codes.value.filter(c => selectedCodes.value.includes(c.id) && !c.isRedeemed).length
+  if (unusedSelectedCount === 0) {
+    showWarningToast('当前页选中的兑换码中没有未使用的兑换码')
+    return
+  }
+  
+  batchRedeemEmailsInput.value = ''
+  batchRedeemProgress.value = { total: 0, success: 0, failed: 0 }
+  batchRedeemLogs.value = []
+  showBatchRedeemDialog.value = true
+}
+
+const closeBatchRedeemDialog = () => {
+  showBatchRedeemDialog.value = false
+}
+
+const handleBatchRedeemProcess = async () => {
+  const rawEmails = batchRedeemEmailsInput.value.split('\n').map(e => e.trim()).filter(Boolean)
+  const validEmails = rawEmails.filter(e => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e))
+  
+  if (validEmails.length === 0) {
+    showErrorToast('没有输入有效的邮箱地址')
+    return
+  }
+
+  const unusedCodesToUse = codes.value.filter(c => selectedCodes.value.includes(c.id) && !c.isRedeemed)
+
+  if (validEmails.length > unusedCodesToUse.length) {
+    if (!confirm(`您输入了 ${validEmails.length} 个邮箱，但当前页只选中了 ${unusedCodesToUse.length} 个可用兑换码。只会有 ${unusedCodesToUse.length} 个邮箱被核销邀请，确认继续？`)) {
+      return
+    }
+  } else {
+    if (!confirm(`将向 ${validEmails.length} 个邮箱自动发送核销邀请，确认继续？`)) {
+      return
+    }
+  }
+
+  batchRedeemProcessing.value = true
+  batchRedeemProgress.value = { total: validEmails.length, success: 0, failed: 0 }
+  batchRedeemLogs.value = []
+
+  try {
+    let codeIndex = 0
+    for (const email of validEmails) {
+      if (codeIndex >= unusedCodesToUse.length) {
+         batchRedeemLogs.value.push({ email, status: 'error', message: '可用兑换码不足，放弃核销' })
+         batchRedeemProgress.value.failed++
+         continue
+      }
+      const codeToUse = unusedCodesToUse[codeIndex]
+      codeIndex++
+
+      if (!codeToUse) {
+         batchRedeemLogs.value.push({ email, status: 'error', message: '获取兑换码异常' })
+         batchRedeemProgress.value.failed++
+         continue
+      }
+
+      try {
+         await redemptionCodeService.redeemAdmin({
+            email,
+            code: codeToUse.code,
+            channel: codeToUse.channel || 'common',
+            orderType: codeToUse.orderType || 'warranty'
+         })
+         batchRedeemLogs.value.push({ email, status: 'success', message: `自动核销码 ${codeToUse.code.substring(0, 8)}... 成功` })
+         batchRedeemProgress.value.success++
+      } catch (err: any) {
+         const errorMsg = err.response?.data?.message || err.response?.data?.error || '核销失败'
+         batchRedeemLogs.value.push({ email, status: 'error', message: errorMsg })
+         batchRedeemProgress.value.failed++
+      }
+    }
+
+    showSuccessToast('批量兑换执行完毕')
+  } catch (err: any) {
+    showErrorToast(err.response?.data?.error || '执行过程中出现错误')
+  } finally {
+    batchRedeemProcessing.value = false
+    await loadCodes()
+  }
+}
+
 const handleCopyRedeemerEmail = async (code: RedemptionCode) => {
   const email = getRedeemerEmail(code)
   if (!email) {
@@ -919,7 +1032,25 @@ const handleInviteSubmit = async () => {
         </Select>
       </div>
 
-       <div v-if="selectedCodes.length > 0" class="animate-in fade-in slide-in-from-right-4">
+       <div v-if="selectedCodes.length > 0" class="animate-in fade-in slide-in-from-right-4 flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            @click="openBatchRedeemDialog"
+            class="h-10 rounded-xl px-4 shadow-sm border-indigo-200 bg-indigo-50 text-indigo-600 hover:bg-indigo-100"
+          >
+            <Ticket class="mr-2 h-4 w-4 text-indigo-500" />
+            批量兑换 (选择)
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            @click="handleBatchCopy"
+            class="h-10 rounded-xl px-4 shadow-sm border-gray-200 hover:bg-gray-50 text-gray-700"
+          >
+            <Copy class="mr-2 h-4 w-4 text-gray-500" />
+            批量复制 ({{ selectedCodes.length }})
+          </Button>
           <Button
             variant="destructive"
             size="sm"
@@ -1601,6 +1732,64 @@ const handleInviteSubmit = async () => {
            <Button @click="handleRedeemInvite" :disabled="redeeming" class="rounded-xl bg-blue-600 text-white shadow-lg shadow-blue-200 hover:bg-blue-700 px-6">
              {{ redeeming ? '发送中...' : '确认发送' }}
            </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    <!-- Batch Redeem Selected Dialog -->
+    <Dialog v-model:open="showBatchRedeemDialog">
+      <DialogContent class="sm:max-w-[700px] p-0 overflow-hidden bg-white border-none shadow-2xl rounded-3xl max-h-[85vh] flex flex-col">
+        <DialogHeader class="px-8 pt-8 pb-4 shrink-0">
+          <DialogTitle class="text-2xl font-bold text-gray-900">选中兑换码批量自动核销</DialogTitle>
+          <p class="text-sm text-gray-500 mt-2">
+            当前选中项中，包含 <span class="font-bold text-gray-800">{{ codes.filter(c => selectedCodes.includes(c.id) && !c.isRedeemed).length }}</span> 个可用的未使用兑换码。
+          </p>
+        </DialogHeader>
+
+        <div class="flex-1 min-h-0 px-8 pb-6 overflow-y-auto space-y-4">
+            <div class="space-y-2">
+              <Label class="text-xs font-semibold text-gray-500 uppercase tracking-wider">批量邀请邮箱列表</Label>
+              <textarea
+                v-model="batchRedeemEmailsInput"
+                class="w-full h-32 p-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-100 focus:border-indigo-500 transition-all text-sm resize-none"
+                placeholder="一行一个邮箱地址，例如：&#10;yangzenghaohtu@gmail.com&#10;nobodyorsomebody@proton.me"
+              ></textarea>
+              <p class="text-xs text-gray-400">将按顺序依次消耗选中的可用兑换码为对应邮箱充值/邀请。当邮箱数大于所选码数时，多余邮箱将失败。</p>
+            </div>
+
+            <div v-if="batchRedeemLogs.length > 0" class="mt-6">
+              <div class="flex items-center justify-between mb-2">
+                <p class="text-xs font-semibold text-gray-500 uppercase">执行日志 / 进度</p>
+                <p class="text-[12px] font-mono bg-gray-100 px-2 py-1 rounded text-gray-700">
+                   成功 <span class="text-green-600 font-bold">{{ batchRedeemProgress.success }}</span> / 失败 <span class="text-red-500 font-bold">{{ batchRedeemProgress.failed }}</span> / 总共 {{ batchRedeemProgress.total }}
+                </p>
+              </div>
+              <div class="h-40 overflow-y-auto bg-gray-900 border border-gray-800 rounded-xl p-3 space-y-1 font-mono text-[12px]">
+                 <div v-for="(log, idx) in batchRedeemLogs" :key="idx" class="flex items-start gap-2 text-gray-300 break-all">
+                    <span class="text-gray-500 shrink-0">[{{ idx + 1 }}]</span>
+                    <span :class="{'text-green-400': log.status === 'success', 'text-red-400': log.status === 'error', 'text-blue-400': log.status === 'info' }">
+                      {{ log.email }} - {{ log.message }}
+                    </span>
+                 </div>
+                 <div v-if="batchRedeemProcessing" class="text-gray-500 animate-pulse mt-2">正在执行...</div>
+              </div>
+            </div>
+        </div>
+
+        <DialogFooter class="px-8 pb-8 pt-4 shrink-0 border-t border-gray-100 bg-white/80 backdrop-blur justify-between flex-row items-center">
+          <div class="flex-1"></div>
+          <Button type="button" variant="ghost" @click="closeBatchRedeemDialog" class="rounded-xl h-11 px-6 mr-2 text-gray-500 hover:bg-gray-100" :disabled="batchRedeemProcessing">
+            关闭
+          </Button>
+          <Button type="button" class="rounded-xl h-11 px-6 bg-indigo-600 hover:bg-indigo-700 text-white shadow-lg shadow-indigo-200" :disabled="batchRedeemProcessing" @click="handleBatchRedeemProcess">
+            <template v-if="batchRedeemProcessing">
+              <span class="animate-spin w-4 h-4 border-2 border-current border-t-transparent rounded-full mr-2"></span>
+              执行中...
+            </template>
+            <template v-else>
+              开始自动核销
+            </template>
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

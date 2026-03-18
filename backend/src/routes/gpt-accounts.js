@@ -787,11 +787,8 @@ router.post('/', async (req, res) => {
       return code
     }
 
-    // 自动生成兑换码并绑定到该账号
-    // Team 账号默认总容量 5，新建账号默认人数按 1 计算，所以默认生成 4 个兑换码
-    const totalCapacity = 5
-    const currentUserCountForCodes = Math.max(1, Number(finalUserCount) || 1)
-    const codesToGenerate = Math.max(0, totalCapacity - currentUserCountForCodes)
+    // 自动生成 5 个兑换码并绑定到该账号
+    const codesToGenerate = 5
 
     const generatedCodes = []
     for (let i = 0; i < codesToGenerate; i++) {
@@ -803,7 +800,7 @@ router.post('/', async (req, res) => {
       while (attempts < 5 && !success) {
         try {
           db.run(
-            `INSERT INTO redemption_codes (code, account_email, created_at, updated_at) VALUES (?, ?, DATETIME('now', 'localtime'), DATETIME('now', 'localtime'))`,
+            `INSERT INTO redemption_codes (code, account_email, channel, created_at, updated_at) VALUES (?, ?, 'common', DATETIME('now', 'localtime'), DATETIME('now', 'localtime'))`,
             [code, normalizedEmail]
           )
           generatedCodes.push(code)
