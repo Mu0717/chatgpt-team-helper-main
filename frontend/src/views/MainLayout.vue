@@ -216,7 +216,7 @@ const isGroupExpanded = (key: string) => {
             <Github class="w-5 h-5 text-white" />
           </a>
           <router-link to="/admin" class="text-xl font-semibold tracking-tight text-gray-900" @click="handleMenuClick">
-            ChatGPT Team Helper
+            ChatGPT Team
           </router-link>
         </div>
         <p class="text-xs font-medium text-gray-400 pl-11">Management Console</p>
