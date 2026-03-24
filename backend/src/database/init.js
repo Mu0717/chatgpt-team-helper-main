@@ -1997,6 +1997,12 @@ export async function initDatabase() {
               saveDatabase()
             }
 
+            if (!redemptionColumns.includes('is_sold')) {
+              database.run('ALTER TABLE redemption_codes ADD COLUMN is_sold INTEGER DEFAULT 0')
+              console.log('已添加 is_sold 列到 redemption_codes 表')
+              saveDatabase()
+            }
+
             database.run(
               `UPDATE redemption_codes SET channel = ? WHERE channel IS NULL OR channel = ''`,
               [DEFAULT_CHANNEL],
@@ -2091,7 +2097,8 @@ export async function initDatabase() {
       reserved_for_entry_id INTEGER,
       reserved_at DATETIME,
       reserved_for_order_no TEXT,
-      reserved_for_order_email TEXT
+      reserved_for_order_email TEXT,
+      is_sold INTEGER DEFAULT 0
     )
   `)
 

@@ -188,8 +188,10 @@ const mapCodeRow = (row, channelsByKey) => {
     reservedForOrderNo: row.length > 14 ? row[14] || null : null,
     reservedForOrderEmail: row.length > 15 ? row[15] || null : null,
     orderType: row.length > 16 ? row[16] || null : null,
+    // 是否已标记为售卖
+    isSold: row.length > 17 ? toInt(row[17], 0) === 1 : false,
     // Optional: may be present when list API joins gpt_accounts.
-    accountIsBanned: row.length > 17 ? toInt(row[17], 0) === 1 : undefined
+    accountIsBanned: row.length > 18 ? toInt(row[18], 0) === 1 : undefined
   }
 }
 
@@ -329,7 +331,8 @@ export async function redeemCodeInternal({
       SELECT id, code, is_redeemed, redeemed_at, redeemed_by,
              account_email, channel, channel_name, created_at, updated_at,
              reserved_for_uid, reserved_for_username, reserved_for_entry_id, reserved_at,
-             reserved_for_order_no, reserved_for_order_email, order_type
+             reserved_for_order_no, reserved_for_order_email, order_type,
+             COALESCE(is_sold, 0) AS is_sold
       FROM redemption_codes
       WHERE code = ?
     `, [sanitizedCode])
@@ -696,6 +699,7 @@ router.get('/', authenticateToken, requireMenu('redemption_codes'), async (req, 
                rc.account_email, rc.channel, rc.channel_name, rc.created_at, rc.updated_at,
                rc.reserved_for_uid, rc.reserved_for_username, rc.reserved_for_entry_id, rc.reserved_at,
                rc.reserved_for_order_no, rc.reserved_for_order_email, rc.order_type,
+               COALESCE(rc.is_sold, 0) AS is_sold,
                CASE
                  WHEN ga.id IS NULL THEN 0
                  ELSE COALESCE(ga.is_banned, 0)
@@ -726,6 +730,10 @@ router.get('/', authenticateToken, requireMenu('redemption_codes'), async (req, 
       conditions.push('rc.is_redeemed = 1')
     } else if (status === 'unused' || status === 'unredeemed') {
       conditions.push('rc.is_redeemed = 0')
+    } else if (status === 'sold') {
+      conditions.push('COALESCE(rc.is_sold, 0) = 1')
+    } else if (status === 'unsold') {
+      conditions.push('COALESCE(rc.is_sold, 0) = 0')
     }
 
     if (search) {
@@ -766,6 +774,7 @@ router.get('/', authenticateToken, requireMenu('redemption_codes'), async (req, 
                rc.account_email, rc.channel, rc.channel_name, rc.created_at, rc.updated_at,
                rc.reserved_for_uid, rc.reserved_for_username, rc.reserved_for_entry_id, rc.reserved_at,
                rc.reserved_for_order_no, rc.reserved_for_order_email, rc.order_type,
+               COALESCE(rc.is_sold, 0) AS is_sold,
                CASE
                  WHEN ga.id IS NULL THEN 0
                  ELSE COALESCE(ga.is_banned, 0)
@@ -1069,7 +1078,8 @@ router.patch('/:id/channel', authenticateToken, requireMenu('redemption_codes'),
       SELECT id, code, is_redeemed, redeemed_at, redeemed_by,
              account_email, channel, channel_name, created_at, updated_at,
              reserved_for_uid, reserved_for_username, reserved_for_entry_id, reserved_at,
-             reserved_for_order_no, reserved_for_order_email, order_type
+             reserved_for_order_no, reserved_for_order_email, order_type,
+             COALESCE(is_sold, 0) AS is_sold
       FROM redemption_codes
       WHERE id = ?
     `, [req.params.id])
@@ -1084,6 +1094,88 @@ router.patch('/:id/channel', authenticateToken, requireMenu('redemption_codes'),
     })
   } catch (error) {
     console.error('更新兑换码渠道失败:', error)
+    res.status(500).json({ error: '内部服务器错误' })
+  }
+})
+
+// 切换兑换码的已售卖状态
+router.patch('/:id/sold', authenticateToken, requireMenu('redemption_codes'), async (req, res) => {
+  try {
+    const codeId = toInt(req.params.id, 0)
+    if (!codeId) {
+      return res.status(400).json({ error: '无效的兑换码 ID' })
+    }
+
+    const isSold = parseBoolean(req.body.isSold, null)
+    if (isSold === null) {
+      return res.status(400).json({ error: '请提供 isSold 参数' })
+    }
+
+    const db = await getDatabase()
+    const { byKey: channelsByKey } = await getChannels(db)
+
+    const checkResult = db.exec('SELECT id FROM redemption_codes WHERE id = ?', [codeId])
+    if (checkResult.length === 0 || checkResult[0].values.length === 0) {
+      return res.status(404).json({ error: '兑换码不存在' })
+    }
+
+    db.run(
+      `UPDATE redemption_codes SET is_sold = ?, updated_at = DATETIME('now', 'localtime') WHERE id = ?`,
+      [isSold ? 1 : 0, codeId]
+    )
+    saveDatabase()
+
+    const updatedResult = db.exec(`
+      SELECT id, code, is_redeemed, redeemed_at, redeemed_by,
+             account_email, channel, channel_name, created_at, updated_at,
+             reserved_for_uid, reserved_for_username, reserved_for_entry_id, reserved_at,
+             reserved_for_order_no, reserved_for_order_email, order_type,
+             COALESCE(is_sold, 0) AS is_sold
+      FROM redemption_codes
+      WHERE id = ?
+    `, [codeId])
+
+    const updatedCode = updatedResult.length > 0 && updatedResult[0].values.length > 0
+      ? mapCodeRow(updatedResult[0].values[0], channelsByKey)
+      : null
+
+    res.json({
+      message: isSold ? '已标记为已售卖' : '已取消售卖标记',
+      code: updatedCode
+    })
+  } catch (error) {
+    console.error('更新兑换码售卖状态失败:', error)
+    res.status(500).json({ error: '内部服务器错误' })
+  }
+})
+
+// 批量标记/取消兑换码的已售卖状态
+router.post('/batch-sold', authenticateToken, requireMenu('redemption_codes'), async (req, res) => {
+  try {
+    const { ids, isSold } = req.body
+
+    if (!ids || !Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ error: '请提供要标记的兑换码 ID 数组' })
+    }
+
+    const sold = parseBoolean(isSold, true)
+    const db = await getDatabase()
+    const placeholders = ids.map(() => '?').join(',')
+
+    db.run(
+      `UPDATE redemption_codes SET is_sold = ?, updated_at = DATETIME('now', 'localtime') WHERE id IN (${placeholders})`,
+      [sold ? 1 : 0, ...ids]
+    )
+    saveDatabase()
+
+    res.json({
+      message: sold
+        ? `已将 ${ids.length} 个兑换码标记为已售卖`
+        : `已取消 ${ids.length} 个兑换码的售卖标记`,
+      count: ids.length
+    })
+  } catch (error) {
+    console.error('批量更新兑换码售卖状态失败:', error)
     res.status(500).json({ error: '内部服务器错误' })
   }
 })

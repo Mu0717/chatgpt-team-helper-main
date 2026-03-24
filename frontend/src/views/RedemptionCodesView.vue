@@ -27,7 +27,7 @@ import {
   DialogFooter,
 } from '@/components/ui/dialog'
 import { useToast } from '@/components/ui/toast'
-import { Search, Plus, Download, Trash2, ChevronLeft, ChevronRight, RefreshCcw, RefreshCw, Ticket, X, Copy, AlertTriangle } from 'lucide-vue-next'
+import { Search, Plus, Download, Trash2, ChevronLeft, ChevronRight, RefreshCcw, RefreshCw, Ticket, X, Copy, AlertTriangle, ShoppingCart } from 'lucide-vue-next'
 
 const router = useRouter()
 const route = useRoute()
@@ -54,6 +54,8 @@ const batchRedeemEmailsInput = ref('')
 const batchRedeemProcessing = ref(false)
 const batchRedeemProgress = ref({ total: 0, success: 0, failed: 0 })
 const batchRedeemLogs = ref<{email: string, status: string, message: string}[]>([])
+// 已售卖标记相关状态
+const markingSoldId = ref<number | null>(null)
 
 const appConfigStore = useAppConfigStore()
 const dateFormatOptions = computed(() => ({
@@ -198,7 +200,7 @@ const pageSize = ref(10)
 
 // 搜索和筛选状态
 const searchQuery = ref('')
-const statusFilter = ref<'全部' | '已使用' | '未使用'>('全部')
+const statusFilter = ref<'全部' | '已使用' | '未使用' | '已售卖' | '未售卖'>('全部')
 
 // 计算总页数
 const totalPages = computed(() => Math.max(1, Math.ceil(totalCodes.value / pageSize.value)))
@@ -332,7 +334,11 @@ const loadCodes = async () => {
       ? 'redeemed'
       : statusFilter.value === '未使用'
         ? 'unused'
-        : 'all'
+        : statusFilter.value === '已售卖'
+          ? 'sold'
+          : statusFilter.value === '未售卖'
+            ? 'unsold'
+            : 'all'
 
     const response = await redemptionCodeService.list({
       page: currentPage.value,
@@ -503,6 +509,47 @@ const handleBatchDelete = async () => {
     await loadCodes()
   } catch (err: any) {
     error.value = err.response?.data?.error || '批量删除失败'
+  }
+}
+
+// 单个标记/取消已售卖
+const handleMarkSold = async (code: RedemptionCode) => {
+  if (markingSoldId.value === code.id) return
+  markingSoldId.value = code.id
+  try {
+    const nextSold = !code.isSold
+    const { message, code: updatedCode } = await redemptionCodeService.markSold(code.id, nextSold)
+    const index = codes.value.findIndex(item => item.id === code.id)
+    if (index !== -1) {
+      codes.value[index] = {
+        ...codes.value[index],
+        ...(updatedCode || { isSold: nextSold })
+      }
+      codes.value = [...codes.value]
+    }
+    showSuccessToast(message || (nextSold ? '已标记为已售卖' : '已取消售卖标记'))
+  } catch (err: any) {
+    showErrorToast(err.response?.data?.error || '更新售卖状态失败')
+  } finally {
+    markingSoldId.value = null
+  }
+}
+
+// 批量标记已售卖
+const handleBatchMarkSold = async (isSold: boolean) => {
+  if (selectedCodes.value.length === 0) {
+    showWarningToast('请选择要标记的兑换码')
+    return
+  }
+  const label = isSold ? '标记为已售卖' : '取消售卖标记'
+  if (!confirm(`确定要将选中的 ${selectedCodes.value.length} 个兑换码${label}吗？`)) return
+  try {
+    const result = await redemptionCodeService.batchMarkSold(selectedCodes.value, isSold)
+    showSuccessToast(result.message || `已${label}`)
+    selectedCodes.value = []
+    await loadCodes()
+  } catch (err: any) {
+    showErrorToast(err.response?.data?.error || `批量${label}失败`)
   }
 }
 
@@ -1028,6 +1075,8 @@ const handleInviteSubmit = async () => {
             <SelectItem value="全部">全部状态</SelectItem>
             <SelectItem value="未使用">未使用</SelectItem>
             <SelectItem value="已使用">已使用</SelectItem>
+            <SelectItem value="已售卖">已售卖</SelectItem>
+            <SelectItem value="未售卖">未售卖</SelectItem>
           </SelectContent>
         </Select>
       </div>
@@ -1059,6 +1108,24 @@ const handleInviteSubmit = async () => {
           >
             <Trash2 class="mr-2 h-4 w-4" />
             批量删除 ({{ selectedCodes.length }})
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            @click="handleBatchMarkSold(true)"
+            class="h-10 rounded-xl px-4 shadow-sm border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100"
+          >
+            <ShoppingCart class="mr-2 h-4 w-4 text-amber-500" />
+            标记已售卖
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            @click="handleBatchMarkSold(false)"
+            class="h-10 rounded-xl px-4 shadow-sm border-gray-200 text-gray-600 hover:bg-gray-100"
+          >
+            <ShoppingCart class="mr-2 h-4 w-4 text-gray-400" />
+            取消售卖
           </Button>
         </div>
     </div>
@@ -1157,11 +1224,19 @@ const handleInviteSubmit = async () => {
                   </div>
                 </td>
                 <td class="px-6 py-5 text-center">
-                  <span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold border"
-                    :class="code.isRedeemed ? 'bg-gray-50 text-gray-500 border-gray-200' : 'bg-green-50 text-green-700 border-green-200'"
-                  >
-                    {{ code.isRedeemed ? '已使用' : '未使用' }}
-                  </span>
+                  <div class="flex flex-col items-center gap-1">
+                    <span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold border"
+                      :class="code.isRedeemed ? 'bg-gray-50 text-gray-500 border-gray-200' : 'bg-green-50 text-green-700 border-green-200'"
+                    >
+                      {{ code.isRedeemed ? '已使用' : '未使用' }}
+                    </span>
+                    <span
+                      v-if="code.isSold"
+                      class="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-amber-50 text-amber-700 border border-amber-200"
+                    >
+                      已售卖
+                    </span>
+                  </div>
                 </td>
                 <td class="px-6 py-5">
                    <Select
@@ -1253,6 +1328,19 @@ const handleInviteSubmit = async () => {
 	                      <Ticket class="w-4 h-4" />
 	                    </Button>
 
+	                    <!-- 标记已售卖 -->
+	                    <Button
+	                      size="icon"
+	                      variant="ghost"
+	                      class="h-8 w-8 rounded-lg"
+	                      :class="code.isSold ? 'text-amber-500 hover:text-amber-700 hover:bg-amber-50' : 'text-gray-400 hover:text-amber-600 hover:bg-amber-50'"
+	                      @click="handleMarkSold(code)"
+	                      :disabled="markingSoldId === code.id"
+	                      :title="code.isSold ? '取消售卖标记' : '标记为已售卖'"
+	                    >
+	                      <ShoppingCart class="w-4 h-4" />
+	                    </Button>
+
 	                    <!-- Delete -->
 	                    <Button 
 	                      size="icon" 
@@ -1288,11 +1376,19 @@ const handleInviteSubmit = async () => {
                       已绑定
                    </span>
                 </div>
-                <span class="inline-flex items-center px-2 py-1 rounded-full text-xs font-semibold border"
-                   :class="code.isRedeemed ? 'bg-gray-50 text-gray-500 border-gray-200' : 'bg-green-50 text-green-700 border-green-200'"
-                >
-                   {{ code.isRedeemed ? '已使用' : '未使用' }}
-                </span>
+                <div class="flex items-center gap-2">
+                   <span class="inline-flex items-center px-2 py-1 rounded-full text-xs font-semibold border"
+                      :class="code.isRedeemed ? 'bg-gray-50 text-gray-500 border-gray-200' : 'bg-green-50 text-green-700 border-green-200'"
+                   >
+                      {{ code.isRedeemed ? '已使用' : '未使用' }}
+                   </span>
+                   <span
+                      v-if="code.isSold"
+                      class="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-amber-50 text-amber-700 border border-amber-200"
+                   >
+                      已售卖
+                   </span>
+                </div>
              </div>
 
              <div class="space-y-3 mb-4">
@@ -1393,6 +1489,17 @@ const handleInviteSubmit = async () => {
 	                >
 	                   <Ticket class="w-3.5 h-3.5 mr-1" />
 	                   兑换
+	                </Button>
+	                <Button
+	                   size="sm"
+	                   variant="outline"
+	                   class="h-9 text-xs"
+	                   :class="code.isSold ? 'border-amber-200 text-amber-600 hover:bg-amber-50' : 'border-gray-200 text-gray-500 hover:bg-gray-50'"
+	                   @click="handleMarkSold(code)"
+	                   :disabled="markingSoldId === code.id"
+	                >
+	                   <ShoppingCart class="w-3.5 h-3.5 mr-1" />
+	                   {{ code.isSold ? '取消售卖' : '已售卖' }}
 	                </Button>
 	                <Button 
 	                   size="sm" 

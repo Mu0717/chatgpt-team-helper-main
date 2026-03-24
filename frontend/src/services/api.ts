@@ -505,6 +505,8 @@ export interface RedemptionCode {
   channel: RedemptionChannel
   channelName?: string
   orderType?: PurchaseOrderType | null
+  // 是否已标记为售卖
+  isSold?: boolean
   createdAt: string
   updatedAt: string
   reservedForUid?: string | null
@@ -1958,7 +1960,7 @@ export const redemptionCodeService = {
     page?: number
     pageSize?: number
     search?: string
-    status?: 'all' | 'redeemed' | 'unused'
+    status?: 'all' | 'redeemed' | 'unused' | 'sold' | 'unsold'
   }): Promise<{
     codes: RedemptionCode[]
     pagination: { page: number; pageSize: number; total: number }
@@ -2078,6 +2080,18 @@ export const redemptionCodeService = {
 
   async updateChannel(id: number, channel: RedemptionChannel): Promise<{ message: string; code: RedemptionCode }> {
     const response = await api.patch(`/redemption-codes/${id}/channel`, { channel })
+    return response.data
+  },
+
+  // 标记/取消单个兑换码的已售卖状态
+  async markSold(id: number, isSold: boolean): Promise<{ message: string; code: RedemptionCode }> {
+    const response = await api.patch(`/redemption-codes/${id}/sold`, { isSold })
+    return response.data
+  },
+
+  // 批量标记/取消兑换码的已售卖状态
+  async batchMarkSold(ids: number[], isSold: boolean): Promise<{ message: string; count: number }> {
+    const response = await api.post('/redemption-codes/batch-sold', { ids, isSold })
     return response.data
   }
 }
